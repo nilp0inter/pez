@@ -6,7 +6,7 @@ Command-line XPath evaluation tool
 Build
 -----
 
-    $ gcc `xml2-config --cflags` `xml2-config --libs` -lcurl -o pez pez.c 
+    $ gcc `xml2-config --cflags` `xml2-config --libs` -o pez pez.c -lxml2 -lm -lcurl
 
 Examples
 --------
