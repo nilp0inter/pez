@@ -10,8 +10,8 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include <libxml/tree.h>
 #include <libxml/parser.h>
@@ -21,8 +21,10 @@
 
 #include <curl/curl.h>
 
+#if !defined(LIBXML_XPATH_ENABLED) || !defined(LIBXML_SAX1_ENABLED)
+#error XPath support not compiled in libxml2
+#endif
 
-#if defined(LIBXML_XPATH_ENABLED) && defined(LIBXML_SAX1_ENABLED)
 
 struct MemoryStruct {
   char *memory;
@@ -57,30 +59,47 @@ void print_xpath_nodes(xmlNodeSetPtr nodes, FILE* output);
 
 int 
 main(int argc, char **argv) {
-    /* Parse command line and process file */
-    if((argc < 3) || (argc > 4)) {
-	fprintf(stderr, "Error: wrong number of arguments.\n");
-	usage(argv[0]);
-	return(-1);
-    } 
-    
+    const char *xml_file = NULL;
+    const char *xpath_expr = NULL;
+    const char *ns_list = NULL;
+
+    int opt;
+    while ((opt = getopt(argc, argv, "N:")) != -1) {
+        switch (opt) {
+            case 'N':
+                ns_list = BAD_CAST optarg;
+                break;
+            default:
+                usage(argv[0]);
+                return -1;
+        }
+    }
+
+    if (optind >= argc) {
+        fprintf(stderr, "Error: Missing required XPath expression.\n");
+        usage(argv[0]);
+        return -1;
+    }
+
+    xpath_expr = argv[optind++];
+
+    if (optind < argc) {
+        xml_file = argv[optind++];
+    }
+
     /* Init libxml */     
     xmlInitParser();
     LIBXML_TEST_VERSION
 
-    /* Do the main job */
-    if(execute_xpath_expression(argv[1], BAD_CAST argv[2], (argc > 3) ? BAD_CAST argv[3] : NULL) < 0) {
-	usage(argv[0]);
-	return(-1);
+    /* Process input */
+    if (execute_xpath_expression(xml_file, BAD_CAST xpath_expr, ns_list) < 0) {
+        usage(argv[0]);
+        return -1;
     }
 
     /* Shutdown libxml */
     xmlCleanupParser();
     
-    /*
-     * this is to debug memory for regression tests
-     */
-    xmlMemoryDump();
     return 0;
 }
 
@@ -94,90 +113,98 @@ static void
 usage(const char *name) {
     assert(name);
     
-    fprintf(stderr, "Usage: %s <xml-file> <xpath-expr> [<known-ns-list>]\n", name);
+    fprintf(stderr, "Usage: %s [-N <known-ns-list>] <xpath-expr> [<xml-file>]\n", name);
     fprintf(stderr, "where <known-ns-list> is a list of known namespaces\n");
     fprintf(stderr, "in \"<prefix1>=<href1> <prefix2>=href2> ...\" format\n");
+    fprintf(stderr, "If <xml-file> is not provided, the tool reads from stdin.\n");
 }
 
 /**
  * execute_xpath_expression:
- * @filename:		the input XML filename.
+ * @filename:		the input XML filename (can be NULL to read from stdin).
  * @xpathExpr:		the xpath expression for evaluation.
  * @nsList:		the optional list of known namespaces in 
  *			"<prefix1>=<href1> <prefix2>=href2> ..." format.
  *
- * Parses input XML file, evaluates XPath expression and prints results.
+ * Parses input XML file or reads from stdin, evaluates XPath expression, and prints results.
  *
  * Returns 0 on success and a negative value otherwise.
  */
 int 
 execute_xpath_expression(const char* filename, const xmlChar* xpathExpr, const xmlChar* nsList) {
-    xmlDocPtr doc;
+    xmlDocPtr doc = NULL;
     xmlXPathContextPtr xpathCtx; 
     xmlXPathObjectPtr xpathObj; 
     
-    assert(filename);
     assert(xpathExpr);
-    FILE * file;
-    /* Load XML document */
-    htmlParserCtxtPtr parser = htmlNewParserCtxt();
-    if (file = fopen(filename, "r")) {
-	fclose(file); // File exists
-	doc = htmlCtxtReadFile (parser, filename, NULL, HTML_PARSE_NOBLANKS | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_NONET);
-    } else {
-	// Maybe it's an url, try fetching it
-	CURL *curl_handle;
- 
-	struct MemoryStruct chunk;
- 
-	chunk.memory = malloc(1);  /* will be grown as needed by the realloc above */ 
-	chunk.size = 0;    /* no data at this point */ 
- 
-	curl_global_init(CURL_GLOBAL_ALL);
-	curl_handle = curl_easy_init();
-	curl_easy_setopt(curl_handle, CURLOPT_URL, filename);
-	curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-	curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&chunk);
-	curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "pez/1.0");
-	curl_easy_perform(curl_handle);
-	curl_easy_cleanup(curl_handle);
- 
-	doc = htmlCtxtReadMemory (parser, chunk.memory, chunk.size, filename, NULL, HTML_PARSE_NOBLANKS | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_NONET);
 
-	if(chunk.memory)
-	    free(chunk.memory);
+    htmlParserCtxtPtr parser = htmlNewParserCtxt();
+
+    if (filename == NULL) {
+        // Read XML from stdin
+        doc = htmlReadFd(fileno(stdin), "stdin", NULL, HTML_PARSE_NOBLANKS | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_NONET);
+    } else if (access(filename, F_OK) != -1) {
+        // Check if the file exists, read it if it does
+        doc = htmlCtxtReadFile(parser, filename, NULL, HTML_PARSE_NOBLANKS | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_NONET);
+    } else {
+        // Handle URL fetching
+        CURL *curl_handle;
+        struct MemoryStruct chunk;
+        chunk.memory = malloc(1);  /* will be grown as needed by realloc */ 
+        chunk.size = 0;    /* no data at this point */ 
  
-	curl_global_cleanup();
+        curl_global_init(CURL_GLOBAL_ALL);
+        curl_handle = curl_easy_init();
+        curl_easy_setopt(curl_handle, CURLOPT_URL, filename);
+        curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+        curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&chunk);
+        curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "pez/1.0");
+        
+        CURLcode res = curl_easy_perform(curl_handle);
+        
+        if(res != CURLE_OK) {
+            fprintf(stderr, "Error: failed to fetch URL \"%s\"\n", filename);
+            curl_easy_cleanup(curl_handle);
+            curl_global_cleanup();
+            if (chunk.memory) free(chunk.memory);
+            return -1;
+        }
+        
+        curl_easy_cleanup(curl_handle);
+        curl_global_cleanup();
+
+        doc = htmlCtxtReadMemory(parser, chunk.memory, chunk.size, filename, NULL, HTML_PARSE_NOBLANKS | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_NONET);
+        free(chunk.memory);
     }
 
     if (doc == NULL) {
-	fprintf(stderr, "Error: unable to parse file \"%s\"\n", filename);
-	return(-1);
+        fprintf(stderr, "Error: unable to parse input \"%s\"\n", filename ? filename : "stdin");
+        return -1;
     }
 
-    /* Create xpath evaluation context */
+    /* Create XPath evaluation context */
     xpathCtx = xmlXPathNewContext(doc);
-    if(xpathCtx == NULL) {
-        fprintf(stderr,"Error: unable to create new XPath context\n");
+    if (xpathCtx == NULL) {
+        fprintf(stderr, "Error: unable to create new XPath context\n");
         xmlFreeDoc(doc); 
-        return(-1);
+        return -1;
     }
     
     /* Register namespaces from list (if any) */
-    if((nsList != NULL) && (register_namespaces(xpathCtx, nsList) < 0)) {
-        fprintf(stderr,"Error: failed to register namespaces list \"%s\"\n", nsList);
+    if (nsList != NULL && register_namespaces(xpathCtx, nsList) < 0) {
+        fprintf(stderr, "Error: failed to register namespaces list \"%s\"\n", nsList);
         xmlXPathFreeContext(xpathCtx); 
         xmlFreeDoc(doc); 
-        return(-1);
+        return -1;
     }
 
-    /* Evaluate xpath expression */
+    /* Evaluate XPath expression */
     xpathObj = xmlXPathEvalExpression(xpathExpr, xpathCtx);
-    if(xpathObj == NULL) {
-        fprintf(stderr,"Error: unable to evaluate xpath expression \"%s\"\n", xpathExpr);
+    if (xpathObj == NULL) {
+        fprintf(stderr, "Error: unable to evaluate XPath expression \"%s\"\n", xpathExpr);
         xmlXPathFreeContext(xpathCtx); 
         xmlFreeDoc(doc); 
-        return(-1);
+        return -1;
     }
 
     /* Print results */
@@ -188,7 +215,7 @@ execute_xpath_expression(const char* filename, const xmlChar* xpathExpr, const x
     xmlXPathFreeContext(xpathCtx); 
     xmlFreeDoc(doc); 
     
-    return(0);
+    return 0;
 }
 
 /**
@@ -299,11 +326,3 @@ print_xpath_nodes(xmlNodeSetPtr nodes, FILE* output) {
     // Clean up
     xmlBufferFree(buffer);
 }
-
-#else
-int main(void) {
-    fprintf(stderr, "XPath support not compiled in\n");
-    exit(1);
-}
-#endif
-
