@@ -1,11 +1,11 @@
 /** 
  * code:	PeZ
- * based: 	Based on examples of libxml2 by Aleksey Sanin and libcurl.
+ * based:	Based on examples of libxml2 by Aleksey Sanin and libcurl.
  * author:	Roberto Abdelkader Martinez Perez (nilp0inter) wwww.rusoblanco.com
  * date:	2010/11/07
  * synopsis:	Evaluate XPath expression in HTML files in local disk or fetching from the web
  * usage:	pez <html-file or uri> <xpath-expr> [<known-ns-list>]
- * copy: 	Under GPL2 License
+ * copy:	Under GPL2 License
  */
 
 #include <stdlib.h>
@@ -261,41 +261,43 @@ register_namespaces(xmlXPathContextPtr xpathCtx, const xmlChar* nsList) {
  */
 void
 print_xpath_nodes(xmlNodeSetPtr nodes, FILE* output) {
+    xmlBufferPtr buffer;
     xmlNodePtr cur;
     int size;
     int i;
     
     assert(output);
     size = (nodes) ? nodes->nodeNr : 0;
-    
-//    fprintf(output, "Result (%d nodes):\n", size);
-    for(i = 0; i < size; ++i) {
-	assert(nodes->nodeTab[i]);
-	
-	if(nodes->nodeTab[i]->type == XML_NAMESPACE_DECL) {
-	    xmlNsPtr ns;
-	    
-	    ns = (xmlNsPtr)nodes->nodeTab[i];
-	    cur = (xmlNodePtr)ns->next;
-	    if(cur->ns) { 
-	        fprintf(output, "= namespace \"%s\"=\"%s\" for node %s:%s\n", 
-		    ns->prefix, ns->href, cur->ns->href, cur->content);
-	    } else {
-	        fprintf(output, "= namespace \"%s\"=\"%s\" for node %s\n", 
-		    ns->prefix, ns->href, cur->content);
-	    }
-	} else if(nodes->nodeTab[i]->type == XML_ELEMENT_NODE) {
-	    cur = nodes->nodeTab[i];   	    
-	    if(cur->ns) { 
-    	        fprintf(output, "%s\n", xmlNodeGetContent(cur));
-	    } else {
-    	        fprintf(output, "%s\n", xmlNodeGetContent(cur));
-	    }
-	} else {
-	    cur = nodes->nodeTab[i];    
-    	    fprintf(output, "%s\n", xmlNodeGetContent(cur));
-	}
+
+    // Create a buffer to hold the pretty-printed XML
+    buffer = xmlBufferCreate();
+    if (buffer == NULL) {
+        fprintf(stderr, "Error: unable to create xml buffer\n");
+        return;
     }
+
+    for(i = 0; i < size; ++i) {
+        assert(nodes->nodeTab[i]);
+        cur = nodes->nodeTab[i];
+
+        // Check if the node is a text node
+        if (cur->type == XML_TEXT_NODE) {
+            // Print the content of the text node
+            fprintf(output, "%s\n", (const char *)cur->content);
+        } else if (cur->type == XML_ELEMENT_NODE) {
+            // Dump the node into the buffer with pretty formatting
+            xmlNodeDump(buffer, cur->doc, cur, 0, 1);
+	    
+            // Print the buffer content
+            fprintf(output, "%s\n", (const char *)buffer->content);
+	    
+            // Clear the buffer for the next node
+            xmlBufferEmpty(buffer);
+        }
+    }
+
+    // Clean up
+    xmlBufferFree(buffer);
 }
 
 #else
